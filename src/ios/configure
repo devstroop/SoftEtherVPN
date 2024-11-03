@@ -1,0 +1,122 @@
+#!/bin/sh
+
+set -e
+
+echo '---------------------------------------------------------------------'
+echo 'SoftEther VPN Client for iOS'
+echo '---------------------------------------------------------------------'
+echo 'Author: Akash Shah (@itsalfredakku)'
+echo '---------------------------------------------------------------------'
+
+
+PROJECT_ROOT="$(pwd)"
+IOS_CMAKE_ROOT="$PROJECT_ROOT/ios-cmake"
+# shellcheck disable=SC2034
+NCURSES_ROOT="$PROJECT_ROOT/ncurses"
+
+############################################
+# Clone ios-cmake
+############################################
+if [ ! -d "$IOS_CMAKE_ROOT" ]; then
+  git clone https://github.com/leetal/ios-cmake.git
+fi
+
+############################################
+# Build ncurses
+############################################
+if [ ! -d "$NCURSES_ROOT" ]; then
+  git clone https://github.com/mirror/ncurses.git
+fi
+if [ -d "$NCURSES_ROOT" ]; then
+    cd "$NCURSES_ROOT"
+    echo '===================================='
+    echo 'Configuring Ncurses...'
+    echo '===================================='
+    ./configure --host=arm-apple-darwin --without-shared --without-progs --without-tests || { echo 'Ncurses configuration failed'; exit 1; }
+    make || { echo 'Failed to build Ncurses'; exit 1; }
+    echo 'Finished building Ncurses'
+    echo '===================================='
+    # Exit to Project Root
+    cd "$PROJECT_ROOT"
+fi
+
+
+############################################
+# Build OpenSSL
+############################################
+OPENSSL_ROOT_DIR="$PROJECT_ROOT/openssl"
+
+if [ ! -d "$OPENSSL_ROOT_DIR" ]; then
+    git clone --branch OpenSSL_1_1_1-stable --single-branch https://github.com/openssl/openssl.git "$OPENSSL_ROOT_DIR"
+fi
+
+if [ -d "$OPENSSL_ROOT_DIR" ]; then
+    cd "$OPENSSL_ROOT_DIR"
+    echo '===================================='
+    echo 'Configuring OpenSSL...'
+    echo '===================================='
+
+    # Set environment variables for iOS cross-compilation
+    export IPHONEOS_DEPLOYMENT_TARGET="13.0"
+    export CROSS_TOP="$(xcrun --sdk iphoneos --show-sdk-platform-path)/Developer"
+    export CROSS_SDK="$(xcrun --sdk iphoneos --show-sdk-path | xargs basename)"
+    export CFLAGS="-DTARGET_OS_IPHONE"
+    export PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
+
+    # Configure OpenSSL
+    ./Configure ios64-cross no-shared no-async || { echo 'OpenSSL configuration failed'; exit 1; }
+    # Build OpenSSL
+    make build_libs || { echo 'Failed to build OpenSSL'; exit 1; }
+    echo 'Finished building OpenSSL'
+    echo '===================================='
+    lipo -info "$OPENSSL_ROOT_DIR/libssl.a"
+    lipo -info "$OPENSSL_ROOT_DIR/libcrypto.a"
+    echo '===================================='
+    # Exit to Project Root
+    cd "$PROJECT_ROOT"
+fi
+
+
+if [ ! -d "build" ]; then
+  mkdir build
+fi
+
+OPENSSL_ROOT_DIR="$PROJECT_ROOT/openssl"
+export CFLAGS="-DTARGET_OS_IPHONE -D__APPLE__ -D__MACH__ -D__IOS__ -arch arm64 -Wno-error=implicit-function-declaration -Wno-error=pointer-sign"
+
+# Set environment variables for iOS cross-compilation
+export IPHONEOS_DEPLOYMENT_TARGET="13.0"
+export CROSS_TOP="$(xcrun --sdk iphoneos --show-sdk-platform-path)/Developer"
+export CROSS_SDK="$(xcrun --sdk iphoneos --show-sdk-path | xargs basename)"
+export CFLAGS="-DTARGET_OS_IPHONE"
+export PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:$PATH"
+
+cmake ../.. -G "Xcode" \
+    -DPLATFORM=OS64 \
+    -DSE_ENABLE_VPNCMD=OFF \
+    -DCMAKE_SYSTEM_NAME="iOS" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="13.0" \
+    -DCMAKE_TOOLCHAIN_FILE="$IOS_CMAKE_ROOT/ios.toolchain.cmake" \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_INSTALL_PREFIX="$PROJECT_ROOT/build/ios" \
+    -DOPENSSL_USE_STATIC_LIBS=TRUE \
+    -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT_DIR" \
+    -DOPENSSL_INCLUDE_DIR="$OPENSSL_ROOT_DIR/include" \
+    -DOPENSSL_SSL_LIBRARY="$OPENSSL_ROOT_DIR/libssl.a" \
+    -DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_ROOT_DIR/libcrypto.a" \
+    -DCURSES_INCLUDE_PATH="$NCURSES_ROOT/include" \
+    -DCURSES_LIBRARY="$NCURSES_ROOT/lib/libncurses.a" \
+    -DOQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON \
+    -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="-" \
+    -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED="NO" \
+    -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED="NO" \
+    -DCMAKE_OSX_SYSROOT="iphoneos" || {
+        echo 'CMake configuration failed for SoftEtherVPN'
+        exit 1
+    }
+
+    # Build and install
+cmake --build . --config Release --target install || {
+    echo 'Failed to build SoftEtherVPN'
+    exit 1
+}
